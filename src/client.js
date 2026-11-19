@@ -12,6 +12,11 @@ const dictionaries = {
   zh: { ...COPY.zh, ask: '审批等待', question: '向你提问', 'subagent-done': '子任务完成', error: '任务出错', 'turn-end': '轮次完成' }
 }
 
+/** The built-in text of one kind: kinds that carry a detail show it, the others keep the click hint. */
+function defaultTemplateFor(kind, t) {
+  return DETAIL_DEFAULTS[kind] ? t('templateSummary') : t('template')
+}
+
 /** Own the HTTP requests, notification receiver, and browser permission lifecycle. */
 function createClient({ fetcher, EventSourceClass, NotificationClass, windowObject, openSession, t }) {
   const listeners = new Set()
@@ -50,8 +55,8 @@ function createClient({ fetcher, EventSourceClass, NotificationClass, windowObje
       detail: notice.detail ?? '',
       time: new Date(notice.time).toLocaleTimeString()
     }
-    const fallback = renderTemplate(t('template'), vars)
-    const body = renderTemplate(live.templates[kind] ?? t('template'), vars) || fallback
+    const fallback = renderTemplate(defaultTemplateFor(kind, t), vars)
+    const body = renderTemplate(live.templates[kind] ?? defaultTemplateFor(kind, t), vars) || fallback
     // Without a session title the toast keeps the product name instead of an empty template.
     const title = notice.title === undefined ? 'DeepSeek Harness' : live.title ? renderTemplate(live.title, vars) || notice.title : notice.title
     return { title, body }
@@ -278,7 +283,7 @@ function NotificationsSection({ controller, t }) {
                 id: `dsh-notification-template-${kind}`,
                 style: inputStyle,
                 value: state.templates[kind] ?? '',
-                placeholder: t('template'),
+                placeholder: defaultTemplateFor(kind, t),
                 onChange: event => controller.saveTemplate(kind, event.target.value)
               }),
               h(Switch, {

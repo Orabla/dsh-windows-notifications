@@ -105,6 +105,7 @@ const fakeWindowObject = {
 
 const copyMap = {
   template: '{dot} {kind} · click to open',
+  templateSummary: '{dot} {kind} · {detail}',
   ask: 'approval',
   question: 'question',
   done: 'done',
@@ -154,7 +155,7 @@ assert.equal(shown[0].options.body, '✅ Session A · all good')
 // A kind without a custom template keeps the built-in text.
 streams[0].emit('notification', { id: 'lifetime:2', kind: 'ask', sessionId: 'session-2', time: Date.now() })
 assert.equal(shown.length, 2)
-assert.equal(shown[1].options.body, '🟡 approval · click to open')
+assert.equal(shown[1].options.body, '🟡 approval', 'a kind with an empty detail must not leave a dangling separator')
 assert.equal(shown[1].title, 'DeepSeek Harness', 'a notification without a session title keeps the product name')
 
 shown[0].onclick()
@@ -187,10 +188,11 @@ assert.throws(() => shared.validatePatch({}), TypeError)
 assert.deepEqual(shared.validateConfig({ ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false }), {
   values: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
   templates: {},
-  details: { ask: true, question: true, done: false, error: true, 'subagent-done': false, 'turn-end': false },
+  details: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
   title: ''
 })
-assert.equal(shared.renderTemplate('{dot} {kind} · {detail}', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done ·')
+assert.equal(shared.renderTemplate('{dot} {kind} · {detail}', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done')
+assert.equal(shared.renderTemplate('{dot} {kind} · {detail} · open', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done · open')
 assert.equal(shared.renderTemplate('{unknown}', {}), '{unknown}')
 
 // Event classification keeps its old behaviour and adds the detail line.
@@ -209,5 +211,23 @@ const done = shared.classifyEvent({ running: true, ended: { turn: 3, reason: { k
   agent: { id: 'agent-1', session: { header: { origin: 'main' } } }
 })
 assert.deepEqual(done.notices, [{ kind: 'done', sessionId: 'agent-1', key: 'turn-3' }])
+
+// A finished turn carries the last assistant reply as its detail.
+const session = { id: 'agent-4', header: { origin: 'main' } }
+let state = {}
+let notices = []
+for (const [type, payload] of [
+  ['agent/status', { status: 'running', agent: { id: 'agent-4', session: { header: { origin: 'main' } } } }],
+  ['session/event', { session, event: { type: 'turn/start', data: { turn: 1 } } }],
+  ['session/event', { session, event: { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '已把插件改成 Windows 版' }] } } } }],
+  ['session/event', { session, event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } }],
+  ['agent/status', { status: 'idle', agent: { id: 'agent-4', session: { header: { origin: 'main' } } } }]
+]) {
+  const result = shared.classifyEvent(state, type, payload)
+  state = result.state
+  notices = result.notices
+}
+assert.equal(state.lastText, '已把插件改成 Windows 版', 'the last assistant reply is kept as the summary')
+assert.deepEqual(notices, [{ kind: 'done', sessionId: 'agent-4', key: 'turn-1', detail: '已把插件改成 Windows 版' }])
 
 console.log('client artifact and shared vocabulary: ok')

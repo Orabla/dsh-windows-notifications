@@ -56,7 +56,9 @@ An empty template keeps the built-in text. The **Include the event detail** swit
 | Approval waiting | The tool name and the reason the agent gave                  |
 | Question         | The question text                                            |
 | Task error       | The failure message                                          |
-| Task completed   | None, the session title already names the work               |
+| Task completed   | The last assistant reply of the finished turn, on one line   |
+
+A kind that carries a detail uses `{dot} {kind} · {detail}` as its built-in text, so a completed turn shows what the agent last said instead of a bare "task completed". The other kinds keep the click hint.
 
 The Host never sends a detail the user did not enable.
 
