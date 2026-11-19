@@ -26,9 +26,10 @@ assert.equal(captured.id, 'dsh-windows-notifications')
 
 const reactStub = {
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
-  useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot()
+  useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+  useState: value => [value, () => {}]
 }
-const primitivesStub = { Switch: 'Switch', Button: 'Button' }
+const primitivesStub = { Switch: 'Switch', Button: 'Button', Input: 'Input' }
 const requireStub = name => {
   if (name === 'react') return reactStub
   if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitivesStub
@@ -80,7 +81,13 @@ class FakeEventSource {
 }
 
 const requests = []
-const snapshot = { values: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false }, revision: 0 }
+const snapshot = {
+  values: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
+  templates: { done: '✅ {session} · {detail}' },
+  details: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
+  title: '{session} · DSH',
+  revision: 0
+}
 const fetcher = async (url, options) => {
   requests.push({ url, options })
   return { ok: true, json: async () => snapshot }
@@ -96,13 +103,26 @@ const fakeWindowObject = {
   }
 }
 
+const copyMap = {
+  template: '{dot} {kind} · click to open',
+  ask: 'approval',
+  question: 'question',
+  done: 'done',
+  error: 'error',
+  'subagent-done': 'subtask',
+  'turn-end': 'turn',
+  testTitle: 'test title',
+  testBody: 'test body'
+}
+const t = key => copyMap[key] ?? key
+
 const controller = exported.createClient({
   fetcher,
   EventSourceClass: FakeEventSource,
   NotificationClass: FakeNotification,
   windowObject: fakeWindowObject,
   openSession: id => opened.push(id),
-  t: key => key
+  t
 })
 
 controller.start()
@@ -119,17 +139,31 @@ const saved = requests.at(-1)
 assert.equal(saved.options.method, 'POST')
 assert.deepEqual(JSON.parse(saved.options.body), { done: false })
 
-streams[0].emit('notification', { id: 'lifetime:1', kind: 'ask', sessionId: 'session-1', time: Date.now(), title: 'Build the report' })
+await controller.saveDetail('error', false)
+assert.deepEqual(JSON.parse(requests.at(-1).options.body), { details: { error: false } })
+
+await controller.saveTitle('{kind}')
+assert.deepEqual(JSON.parse(requests.at(-1).options.body), { title: '{kind}' })
+
+// A custom template replaces the built-in text and fills its variables.
+streams[0].emit('notification', { id: 'lifetime:1', kind: 'done', sessionId: 'session-1', time: Date.now(), title: 'Session A', detail: 'all good' })
 assert.equal(shown.length, 1, 'the event notification must reach the notification platform')
-assert.equal(shown[0].title, 'Build the report')
-assert.match(shown[0].options.body, /ask/)
+assert.equal(shown[0].title, 'Session A · DSH', 'the title template must fill its variables')
+assert.equal(shown[0].options.body, '✅ Session A · all good')
+
+// A kind without a custom template keeps the built-in text.
+streams[0].emit('notification', { id: 'lifetime:2', kind: 'ask', sessionId: 'session-2', time: Date.now() })
+assert.equal(shown.length, 2)
+assert.equal(shown[1].options.body, '🟡 approval · click to open')
+assert.equal(shown[1].title, 'DeepSeek Harness', 'a notification without a session title keeps the product name')
+
 shown[0].onclick()
 assert.deepEqual(opened, ['session-1'], 'clicking a notification must open its session')
 assert.equal(focused, 1, 'clicking a notification must focus the window')
 
 controller.test()
-assert.equal(shown.length, 2, 'the test button must submit a notification')
-assert.equal(shown[1].title, 'testTitle')
+assert.equal(shown.length, 3, 'the test button must submit a notification')
+assert.equal(shown[2].title, 'test title')
 
 // The shared vocabulary stays in step with the Host module.
 const shared = await import(new URL('../lib/shared.js', import.meta.url))
@@ -140,8 +174,36 @@ assert.deepEqual(shared.validateSettings({ ask: true, done: false, unknown: 1 },
 assert.throws(() => shared.validateSettings({ ask: true }), TypeError)
 assert.throws(() => shared.validateSettings({ ask: 'yes' }, true), TypeError)
 
-const approval = shared.classifyEvent({}, 'approval/request', { agent: { id: 'agent-1' }, callId: 'call-1' })
-assert.deepEqual(approval.notices, [{ kind: 'ask', sessionId: 'agent-1', key: 'call-1' }])
+// The custom text and detail switches keep their shape.
+assert.deepEqual(shared.validateTemplates({ done: 'x {session}', unknown: 'y' }), { done: 'x {session}' })
+assert.deepEqual(shared.validateTemplates({ done: '   ' }), {}, 'an empty template falls back to the built-in text')
+assert.throws(() => shared.validateTemplates({ done: 5 }), TypeError)
+assert.deepEqual(shared.validateDetails({ error: false, unknown: true }), { error: false })
+assert.throws(() => shared.validateDetails({ error: 'no' }), TypeError)
+assert.deepEqual(shared.validatePatch({ done: false }), { values: { done: false } })
+assert.deepEqual(shared.validatePatch({ templates: { done: 'x' } }), { templates: { done: 'x' } })
+assert.deepEqual(shared.validatePatch({ details: { done: true } }), { details: { done: true } })
+assert.throws(() => shared.validatePatch({}), TypeError)
+assert.deepEqual(shared.validateConfig({ ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false }), {
+  values: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
+  templates: {},
+  details: { ask: true, question: true, done: false, error: true, 'subagent-done': false, 'turn-end': false },
+  title: ''
+})
+assert.equal(shared.renderTemplate('{dot} {kind} · {detail}', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done ·')
+assert.equal(shared.renderTemplate('{unknown}', {}), '{unknown}')
+
+// Event classification keeps its old behaviour and adds the detail line.
+const approval = shared.classifyEvent({}, 'approval/request', { agent: { id: 'agent-1' }, callId: 'call-1', toolName: 'Bash', reason: 'writes a file' })
+assert.deepEqual(approval.notices, [{ kind: 'ask', sessionId: 'agent-1', key: 'call-1', detail: 'Bash · writes a file' }])
+const question = shared.classifyEvent({}, 'user-questions/request', {
+  agent: { id: 'agent-2' },
+  wait: { callId: 'call-2' },
+  questions: [{ id: 'q1', question: 'Which branch?' }]
+})
+assert.deepEqual(question.notices, [{ kind: 'question', sessionId: 'agent-2', key: 'call-2', detail: 'Which branch?' }])
+const failure = shared.classifyEvent({}, 'agent/error', { agent: { id: 'agent-3' }, turn: 2, error: { message: 'boom' } })
+assert.deepEqual(failure.notices, [{ kind: 'error', sessionId: 'agent-3', key: 'turn-2', detail: 'boom' }])
 const done = shared.classifyEvent({ running: true, ended: { turn: 3, reason: { kind: 'completed' } } }, 'agent/status', {
   status: 'idle',
   agent: { id: 'agent-1', session: { header: { origin: 'main' } } }

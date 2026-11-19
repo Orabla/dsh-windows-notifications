@@ -1,6 +1,6 @@
-import { createElement as h, useSyncExternalStore } from 'react'
-import { Switch, Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { BASE_PATH, DEFAULTS, COPY, validateSettings } from './shared.js'
+import { createElement as h, useSyncExternalStore, useState } from 'react'
+import { Switch, Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import { BASE_PATH, DEFAULTS, DETAIL_DEFAULTS, DOTS, KINDS, COPY, renderTemplate, validateSettings, validateTemplates, validateDetails, validateTitle } from './shared.js'
 import { createNotifier } from './notifications.js'
 
 const name = 'dsh-windows-notifications'
@@ -16,23 +16,73 @@ const dictionaries = {
 function createClient({ fetcher, EventSourceClass, NotificationClass, windowObject, openSession, t }) {
   const listeners = new Set()
   const abort = new AbortController()
+  const timers = new Map()
+  // The notifier reads the live configuration when a notification arrives.
+  const live = { templates: {}, title: '' }
   let disposed = false
   let source
   let revision = -1
   let generation = 0
-  let state = { values: { ...DEFAULTS }, loaded: false, busy: false, permission: 'unsupported', connected: false, active: false, status: 'loading' }
+  let state = {
+    values: { ...DEFAULTS },
+    templates: {},
+    details: { ...DETAIL_DEFAULTS },
+    title: '',
+    loaded: false,
+    busy: false,
+    permission: 'unsupported',
+    connected: false,
+    active: false,
+    status: 'loading'
+  }
   const publish = patch => {
     if (disposed) return
     state = { ...state, ...patch }
     for (const listener of listeners) listener()
   }
-  const notifier = createNotifier({ NotificationClass, windowObject, openSession, copy: t, onStatus: status => publish({ status }) })
+  /** Build the toast title and body from the template the user configured. */
+  const render = notice => {
+    const kind = notice.kind
+    const vars = {
+      dot: DOTS[kind] ?? '🟡',
+      kind: t(kind),
+      session: notice.title ?? '',
+      detail: notice.detail ?? '',
+      time: new Date(notice.time).toLocaleTimeString()
+    }
+    const fallback = renderTemplate(t('template'), vars)
+    const body = renderTemplate(live.templates[kind] ?? t('template'), vars) || fallback
+    // Without a session title the toast keeps the product name instead of an empty template.
+    const title = notice.title === undefined ? 'DeepSeek Harness' : live.title ? renderTemplate(live.title, vars) || notice.title : notice.title
+    return { title, body }
+  }
+  const notifier = createNotifier({ NotificationClass, windowObject, openSession, copy: t, render, onStatus: status => publish({ status }) })
   const accept = snapshot => {
     if (!Number.isSafeInteger(snapshot?.revision) || snapshot.revision < 0) throw new TypeError('Invalid configuration revision.')
     const values = validateSettings(snapshot.values)
     if (snapshot.revision < revision) return
     revision = snapshot.revision
-    publish({ values, loaded: true })
+    const templates = snapshot.templates === undefined ? {} : validateTemplates(snapshot.templates)
+    const details = snapshot.details === undefined ? { ...DETAIL_DEFAULTS } : { ...DETAIL_DEFAULTS, ...validateDetails(snapshot.details) }
+    const title = snapshot.title === undefined ? '' : validateTitle(snapshot.title)
+    live.templates = templates
+    live.title = title
+    publish({ values, templates, details, title, loaded: true })
+  }
+  /** Keep only the fields the Host understands. */
+  const normalize = patch => {
+    const body = {}
+    for (const key of Object.keys(patch)) {
+      if (KINDS.includes(key)) {
+        if (typeof patch[key] !== 'boolean') throw new TypeError('Event switches must be booleans.')
+        body[key] = patch[key]
+      }
+    }
+    if (patch.templates !== undefined) body.templates = validateTemplates(patch.templates)
+    if (patch.details !== undefined) body.details = validateDetails(patch.details)
+    if (patch.title !== undefined) body.title = validateTitle(patch.title)
+    if (Object.keys(body).length === 0) throw new TypeError('Nothing to save.')
+    return body
   }
   const request = async patch => {
     const response = await fetcher(`${BASE_PATH}/settings`, {
@@ -41,7 +91,7 @@ function createClient({ fetcher, EventSourceClass, NotificationClass, windowObje
       cache: 'no-store',
       signal: abort.signal,
       headers: { 'Content-Type': 'application/json', 'x-dsh-notifications': '1' },
-      ...(patch ? { body: JSON.stringify(validateSettings(patch, true)) } : {})
+      ...(patch ? { body: JSON.stringify(patch) } : {})
     })
     if (!response.ok) throw new Error('Configuration request failed.')
     accept(await response.json())
@@ -110,7 +160,52 @@ function createClient({ fetcher, EventSourceClass, NotificationClass, windowObje
       if (disposed || state.busy || !state.loaded) return
       publish({ busy: true, status: 'saving' })
       try {
-        await request({ [kind]: value })
+        await request(normalize({ [kind]: value }))
+        publish({ status: 'saved' })
+      } catch (error) {
+        publish({ status: 'failure' })
+      } finally {
+        publish({ busy: false })
+      }
+    },
+    /** Save one custom text after the user stops typing. */
+    saveTemplate(kind, text) {
+      if (disposed || !state.loaded) return
+      publish({ templates: { ...state.templates, [kind]: text } })
+      const pending = timers.get(kind)
+      if (pending) clearTimeout(pending)
+      timers.set(
+        kind,
+        setTimeout(() => {
+          timers.delete(kind)
+          void (async () => {
+            try {
+              await request(normalize({ templates: { [kind]: text } }))
+              publish({ status: 'saved' })
+            } catch (error) {
+              publish({ status: 'failure' })
+            }
+          })()
+        }, 500)
+      )
+    },
+    async saveDetail(kind, value) {
+      if (disposed || state.busy || !state.loaded) return
+      publish({ busy: true, status: 'saving' })
+      try {
+        await request(normalize({ details: { [kind]: value } }))
+        publish({ status: 'saved' })
+      } catch (error) {
+        publish({ status: 'failure' })
+      } finally {
+        publish({ busy: false })
+      }
+    },
+    async saveTitle(text) {
+      if (disposed || state.busy || !state.loaded) return
+      publish({ busy: true, status: 'saving' })
+      try {
+        await request(normalize({ title: text }))
         publish({ status: 'saved' })
       } catch (error) {
         publish({ status: 'failure' })
@@ -138,6 +233,8 @@ function createClient({ fetcher, EventSourceClass, NotificationClass, windowObje
       generation += 1
       abort.abort()
       source?.close()
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
       windowObject.removeEventListener('focus', onFocus)
       notifier.dispose()
       listeners.clear()
@@ -148,20 +245,67 @@ function createClient({ fetcher, EventSourceClass, NotificationClass, windowObje
 /** Render the six switches with the same native controls as built-in DSH pages. */
 function NotificationsSection({ controller, t }) {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
+  const [custom, setCustom] = useState(false)
   const rowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '10px 0' }
+  const fieldStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '4px 0 8px 16px' }
+  const inputStyle = { flex: 1, minWidth: 0 }
   return h(
     'section',
     { 'aria-label': t('title'), style: { padding: 16 } },
     h('h3', null, t('title')),
     h('p', null, t('description')),
+    h(
+      'div',
+      { style: rowStyle },
+      h('span', null, t('customText')),
+      h(Switch, { label: t('customText'), checked: custom, onChange: value => setCustom(Boolean(value)) })
+    ),
     ...ORDER.map(kind =>
       h(
         'div',
-        { key: kind, style: rowStyle },
-        h('span', null, t(kind)),
-        h(Switch, { label: t(kind), checked: state.values[kind], disabled: !state.loaded || state.busy, onChange: value => void controller.save(kind, value) })
+        { key: kind },
+        h(
+          'div',
+          { style: rowStyle },
+          h('span', null, t(kind)),
+          h(Switch, { label: t(kind), checked: state.values[kind], disabled: !state.loaded || state.busy, onChange: value => void controller.save(kind, value) })
+        ),
+        custom
+          ? h(
+              'div',
+              { style: fieldStyle },
+              h(Input, {
+                id: `dsh-notification-template-${kind}`,
+                style: inputStyle,
+                value: state.templates[kind] ?? '',
+                placeholder: t('template'),
+                onChange: event => controller.saveTemplate(kind, event.target.value)
+              }),
+              h(Switch, {
+                label: t('includeDetail'),
+                checked: state.details[kind],
+                disabled: state.busy,
+                onChange: value => void controller.saveDetail(kind, value)
+              })
+            )
+          : null
       )
     ),
+    custom
+      ? h(
+          'div',
+          { style: fieldStyle },
+          h('span', null, t('titleTemplate')),
+          h(Input, {
+            id: 'dsh-notification-title',
+            style: inputStyle,
+            value: state.title,
+            placeholder: t('titlePlaceholder'),
+            onChange: event => void controller.saveTitle(event.target.value)
+          })
+        )
+      : null,
+    custom ? h('p', null, t('placeholders')) : null,
     h('p', null, `${t('permission')}: ${t(state.permission)}`),
     state.permission === 'denied' ? h('p', null, t('help')) : null,
     h('p', null, t(state.connected ? (state.active ? 'receiver' : 'standby') : 'reconnecting')),

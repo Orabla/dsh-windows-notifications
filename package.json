@@ -1,7 +1,7 @@
 {
   "name": "dsh-windows-notifications",
   "description": "Six native Windows notification switches for DeepSeek Harness: approvals, questions, task completion, subtasks, errors, and turn end.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "author": "Orabla",
@@ -45,7 +45,7 @@
   ],
   "scripts": {
     "build": "node scripts/build-client.mjs",
-    "test": "node scripts/test-built.mjs"
+    "test": "node scripts/test-built.mjs && node scripts/test-host.mjs"
   },
   "dsh": {
     "bundle": {

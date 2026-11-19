@@ -30,19 +30,24 @@ function moduleBody(text, names) {
   return `${body}\n\nreturn { ${names.join(', ')} }`
 }
 
+/** Rewrite ESM import specifiers into a destructuring pattern. */
+function toDestructure(names) {
+  const specifiers = names
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const alias = part.match(/^(\S+)\s+as\s+(\S+)$/)
+      return alias ? `${alias[1]}: ${alias[2]}` : part
+    })
+  if (specifiers.length === 0) throw new Error('Empty import list.')
+  return specifiers.join(', ')
+}
+
 /** Replace one single-line import with a lookup in the local module table. */
 function localImport(text, moduleId) {
   return text.replace(new RegExp(`^import \\{([^}]*)\\} from '\\./${moduleId}\\.js'$`, 'm'), (match, names) => {
-    const specifiers = names
-      .split(',')
-      .map(part => part.trim())
-      .filter(Boolean)
-      .map(part => {
-        const alias = part.match(/^(\S+)\s+as\s+(\S+)$/)
-        return alias ? `${alias[1]}: ${alias[2]}` : part
-      })
-    if (specifiers.length === 0) throw new Error(`Empty import from ./${moduleId}.js`)
-    return `const { ${specifiers.join(', ')} } = local(${JSON.stringify(moduleId)})`
+    return `const { ${toDestructure(names)} } = local(${JSON.stringify(moduleId)})`
   })
 }
 
@@ -56,8 +61,8 @@ const client = moduleBody(
   localImport(
     localImport(
       clientSource
-        .replace(/^import \{ createElement as h, useSyncExternalStore \} from 'react'$/m, 'const { createElement: h, useSyncExternalStore } = require("react")')
-        .replace(/^import \{ Switch, Button \} from '@deepseek-ai\/dsh-client-ui-primitives'$/m, 'const { Switch, Button } = require("@deepseek-ai/dsh-client-ui-primitives")'),
+        .replace(/^import \{([^}]*)\} from 'react'$/m, (match, names) => `const { ${toDestructure(names)} } = require("react")`)
+        .replace(/^import \{([^}]*)\} from '@deepseek-ai\/dsh-client-ui-primitives'$/m, (match, names) => `const { ${toDestructure(names)} } = require("@deepseek-ai/dsh-client-ui-primitives")`),
       'shared'
     ),
     'notifications'
