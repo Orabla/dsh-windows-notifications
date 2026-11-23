@@ -58,7 +58,7 @@ An empty template keeps the built-in text. The **Include the event detail** swit
 | Task error       | The failure message                                          |
 | Task completed   | The last assistant reply of the finished turn, on one line   |
 
-A kind that carries a detail uses `{dot} {kind} · {detail}` as its built-in text, so a completed turn shows what the agent last said instead of a bare "task completed". The other kinds keep the click hint.
+A kind that carries a detail uses `{kind}\n{detail}` as its built-in text, so a completed turn shows the event name on the first line and the reply on the second. The other kinds use `{kind}\nClick to open the related DeepSeek Harness session.`. Event details are capped at 50 characters to keep the toast compact; custom templates can contain newlines.
 
 The Host never sends a detail the user did not enable.
 

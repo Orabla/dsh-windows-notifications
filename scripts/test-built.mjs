@@ -104,8 +104,8 @@ const fakeWindowObject = {
 }
 
 const copyMap = {
-  template: '{dot} {kind} · click to open',
-  templateSummary: '{dot} {kind} · {detail}',
+  template: '{kind}\nclick to open',
+  templateSummary: '{kind}\n{detail}',
   ask: 'approval',
   question: 'question',
   done: 'done',
@@ -155,7 +155,7 @@ assert.equal(shown[0].options.body, '✅ Session A · all good')
 // A kind without a custom template keeps the built-in text.
 streams[0].emit('notification', { id: 'lifetime:2', kind: 'ask', sessionId: 'session-2', time: Date.now() })
 assert.equal(shown.length, 2)
-assert.equal(shown[1].options.body, '🟡 approval', 'a kind with an empty detail must not leave a dangling separator')
+assert.equal(shown[1].options.body, 'approval', 'a detail kind with an empty detail shows just the event name')
 assert.equal(shown[1].title, 'DeepSeek Harness', 'a notification without a session title keeps the product name')
 
 shown[0].onclick()
@@ -191,8 +191,10 @@ assert.deepEqual(shared.validateConfig({ ask: true, question: true, done: true, 
   details: { ask: true, question: true, done: true, error: true, 'subagent-done': false, 'turn-end': false },
   title: ''
 })
-assert.equal(shared.renderTemplate('{dot} {kind} · {detail}', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done')
-assert.equal(shared.renderTemplate('{dot} {kind} · {detail} · open', { dot: '🟢', kind: 'done', detail: '' }), '🟢 done · open')
+assert.deepEqual(shared.validateTemplates({ done: 'line 1\nline 2' }), { done: 'line 1\nline 2' }, 'custom templates keep newlines')
+assert.equal(shared.renderTemplate('{kind}\n{detail}', { kind: 'done', detail: '' }), 'done', 'an empty detail leaves no dangling line')
+assert.equal(shared.renderTemplate('{kind}\n{detail}', { kind: 'done', detail: 'all good' }), 'done\nall good')
+assert.equal(shared.renderTemplate('{kind} · {detail}', { kind: 'done', detail: '' }), 'done', 'an empty detail leaves no dangling separator')
 assert.equal(shared.renderTemplate('{unknown}', {}), '{unknown}')
 
 // Event classification keeps its old behaviour and adds the detail line.
@@ -229,5 +231,19 @@ for (const [type, payload] of [
 }
 assert.equal(state.lastText, '已把插件改成 Windows 版', 'the last assistant reply is kept as the summary')
 assert.deepEqual(notices, [{ kind: 'done', sessionId: 'agent-4', key: 'turn-1', detail: '已把插件改成 Windows 版' }])
+
+// Event details are capped at 50 characters so the toast stays compact.
+const longReply = 'A'.repeat(80)
+let truncated = []
+for (const [type, payload] of [
+  ['agent/status', { status: 'running', agent: { id: 'agent-5', session: { header: { origin: 'main' } } } }],
+  ['session/event', { session: { id: 'agent-5', header: { origin: 'main' } }, event: { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: longReply }] } } } }],
+  ['session/event', { session: { id: 'agent-5', header: { origin: 'main' } }, event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } }],
+  ['agent/status', { status: 'idle', agent: { id: 'agent-5', session: { header: { origin: 'main' } } } }]
+]) {
+  const result = shared.classifyEvent(truncated.state ?? {}, type, payload)
+  truncated = { state: result.state, notices: result.notices }
+}
+assert.equal(truncated.notices[0].detail.length, 50, 'the detail line must be capped at 50 characters')
 
 console.log('client artifact and shared vocabulary: ok')
